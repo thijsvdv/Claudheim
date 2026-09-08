@@ -137,7 +137,7 @@ export function createHud(game) {
     const buildRange = el('div', 'hud-build-range', build);
     buildHint.innerHTML =
       '<kbd>B</kbd> pieces <kbd>wheel</kbd> distance <kbd>shift+wheel</kbd> height '
-      + '<kbd>R</kbd> rotate <kbd>LMB</kbd> place <kbd>RMB</kbd> remove';
+      + '<kbd>R</kbd> rotate <kbd>ctrl</kbd> free <kbd>LMB</kbd> place <kbd>RMB</kbd> remove';
 
     const toasts = el('div', 'hud-toasts', root);
 

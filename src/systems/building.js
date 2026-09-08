@@ -8,7 +8,7 @@ const ROTATE_STEP = Math.PI / 4; // 45 degrees
 const REACH = 6;          // metres: how far away you can remove a piece
 const DIST_MIN = 1.5, DIST_MAX = 9, DIST_STEP = 0.5;
 const HEIGHT_MIN = -3, HEIGHT_MAX = 8, HEIGHT_STEP = 0.25;
-const SNAP_RADIUS = 1.6; // metres: how far the ghost will jump to meet a neighbour's edge
+const SNAP_RADIUS = 2.2; // metres: how far from the cursor a snap point can be and still win
 const ADJACENCY_RADIUS = 3.0; // metres between piece centres to count as "connected"
 const GROUND_TOLERANCE = 0.4; // metres of slack between a piece's underside and the terrain
 const COLLAPSE_THRESHOLD = 0.05;
@@ -70,6 +70,31 @@ function mergeGeometries(parts) {
   out.setIndex(index);
   out.computeBoundingSphere();
   return out;
+}
+
+/**
+ * Do two upright boxes actually intersect? Separating-axis test on the four
+ * horizontal axes plus the vertical interval, with a small tolerance so pieces
+ * that merely touch faces count as adjacent rather than overlapping.
+ */
+function boxesOverlap(a, b, tol = 0.06) {
+  const aTop = a.y + a.h / 2, aBot = a.y - a.h / 2;
+  const bTop = b.y + b.h / 2, bBot = b.y - b.h / 2;
+  if (aTop - tol <= bBot || bTop - tol <= aBot) return false;
+
+  const ax = Math.cos(a.rot), az = -Math.sin(a.rot);
+  const bx = Math.cos(b.rot), bz = -Math.sin(b.rot);
+  const axes = [
+    [ax, az], [-az, ax],          // a's local x and z, in world
+    [bx, bz], [-bz, bx],
+  ];
+  const dx = b.x - a.x, dz = b.z - a.z;
+  for (const [ux, uz] of axes) {
+    const ra = (a.w / 2) * Math.abs(ux * ax + uz * az) + (a.d / 2) * Math.abs(ux * -az + uz * ax);
+    const rb = (b.w / 2) * Math.abs(ux * bx + uz * bz) + (b.d / 2) * Math.abs(ux * -bz + uz * bx);
+    if (Math.abs(dx * ux + dz * uz) >= ra + rb - tol) return false;
+  }
+  return true;
 }
 
 export function createBuilding(game) {
@@ -175,23 +200,25 @@ export function createBuilding(game) {
 
   // --- piece lifecycle ---------------------------------------------------------------
 
-  // Connection points: the centre of each face, in the piece's own frame. Two
-  // pieces "click" when one of the ghost's anchors lands on one of theirs,
-  // which is what makes a wall at 45 degrees still meet its neighbour's end.
+  // Snap points: eight corners, the midpoint of each of the twelve edges, and
+  // the centre — the same set on every piece, in its own frame.
   const anchorCache = new Map();
   function localAnchors(def) {
     let list = anchorCache.get(def.id);
-    if (!list) {
-      const [w, h, d] = def.size;
-      list = [new THREE.Vector3(0, h / 2, 0), new THREE.Vector3(0, -h / 2, 0)];
-      // A thin horizontal axis is a panel's broad face — joining wall to wall
-      // through it would bury one plane inside the other, so those faces don't
-      // offer a connection. Vertical faces always do: that's how a wall stands
-      // on a floor and a beam stacks on a beam.
-      if (w >= 0.4) list.push(new THREE.Vector3(w / 2, 0, 0), new THREE.Vector3(-w / 2, 0, 0));
-      if (d >= 0.4) list.push(new THREE.Vector3(0, 0, d / 2), new THREE.Vector3(0, 0, -d / 2));
-      anchorCache.set(def.id, list);
+    if (list) return list;
+    const [w, h, d] = def.size;
+    const xs = [-w / 2, 0, w / 2];
+    const ys = [-h / 2, 0, h / 2];
+    const zs = [-d / 2, 0, d / 2];
+    list = [];
+    for (const x of xs) for (const y of ys) for (const z of zs) {
+      // Two zeros is a face centre: it sits inside a face rather than on its
+      // rim, and only ever competes with the edge points around it.
+      const zeros = (x === 0 ? 1 : 0) + (y === 0 ? 1 : 0) + (z === 0 ? 1 : 0);
+      if (zeros === 2) continue;
+      list.push(new THREE.Vector3(x, y, z));
     }
+    anchorCache.set(def.id, list);
     return list;
   }
 
@@ -207,44 +234,69 @@ export function createBuilding(game) {
     ));
   }
 
+  const _boxA = { x: 0, y: 0, z: 0, w: 0, h: 0, d: 0, rot: 0 };
+  const _boxB = { x: 0, y: 0, z: 0, w: 0, h: 0, d: 0, rot: 0 };
+
+  function collidesWithPieces(def, rotationY, x, y, z, ignore) {
+    _boxA.x = x; _boxA.y = y; _boxA.z = z; _boxA.rot = rotationY;
+    [_boxA.w, _boxA.h, _boxA.d] = def.size;
+    for (const p of pieces) {
+      if (p === ignore) continue;
+      const dx = p.position.x - x, dz = p.position.z - z;
+      if (dx * dx + dz * dz > 36) continue;
+      _boxB.x = p.position.x; _boxB.y = p.position.y; _boxB.z = p.position.z; _boxB.rot = p.rotationY;
+      [_boxB.w, _boxB.h, _boxB.d] = p.def.size;
+      if (boxesOverlap(_boxA, _boxB)) return true;
+    }
+    return false;
+  }
+
   /**
-   * Ghost position that puts one of its anchors on a neighbour's anchor, or
-   * null when nothing is close enough. Rotation is whatever the player chose —
-   * we only move the piece, never turn it.
+   * Snap the way a hand would: find the snap point on an existing piece nearest
+   * to where you're pointing, then hang the ghost off whichever of its own snap
+   * points puts it closest to the aim. Rotation is always yours; only the
+   * position moves. Returns null when nothing is near enough, or when snapping
+   * is held off.
    */
   function snapToNeighbour(def, rotationY, aim) {
     if (!snappable(def)) return null;
-    const local = localAnchors(def);
-    const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
-    let best = null;
-    let bestDistSq = SNAP_RADIUS * SNAP_RADIUS;
+
+    // Rank every nearby snap point by how close it is to the cursor.
+    const targets = [];
     for (const p of pieces) {
-      if (!p.anchors || p.position.distanceToSquared(aim) > 36) continue;
+      if (!p.anchors) continue;
+      if (p.position.distanceToSquared(aim) > 64) continue;
       for (const a of p.anchors) {
-        for (const b of local) {
-          const bx = b.x * cos + b.z * sin;
-          const bz = -b.x * sin + b.z * cos;
-          const px = a.x - bx, py = a.y - b.y, pz = a.z - bz;
-          const dx = px - aim.x, dy = py - aim.y, dz = pz - aim.z;
-          const distSq = dx * dx + dy * dy + dz * dz;
-          if (distSq < bestDistSq) {
-            bestDistSq = distSq;
-            (best ??= new THREE.Vector3()).set(px, py, pz);
-          }
-        }
+        const dsq = a.distanceToSquared(aim);
+        if (dsq <= SNAP_RADIUS * SNAP_RADIUS) targets.push({ a, dsq });
       }
     }
-    return best;
-  }
+    if (!targets.length) return null;
+    targets.sort((x, y) => x.dsq - y.dsq);
 
-  let handleGeo = null, handleMat = null;
-  function doorHandleGeometry() {
-    handleGeo ??= new THREE.CylinderGeometry(0.028, 0.028, 0.09, 8);
-    return handleGeo;
-  }
-  function doorHandleMaterial() {
-    handleMat ??= new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.45, metalness: 0.6 });
-    return handleMat;
+    const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
+    const locals = localAnchors(def);
+
+    // Walk out from the cursor: for each candidate point, hang the ghost off
+    // whichever of its own points leaves it nearest the cursor, and take the
+    // first fit that doesn't bury the piece inside something already built.
+    for (let i = 0; i < Math.min(targets.length, 12); i++) {
+      const t = targets[i].a;
+      const fits = [];
+      for (const b of locals) {
+        const bx = b.x * cos + b.z * sin;
+        const bz = -b.x * sin + b.z * cos;
+        const px = t.x - bx, py = t.y - b.y, pz = t.z - bz;
+        const dx = px - aim.x, dy = py - aim.y, dz = pz - aim.z;
+        fits.push({ px, py, pz, dsq: dx * dx + dy * dy + dz * dz });
+      }
+      fits.sort((x, y) => x.dsq - y.dsq);
+      for (const f of fits) {
+        if (collidesWithPieces(def, rotationY, f.px, f.py, f.pz)) continue;
+        return new THREE.Vector3(f.px, f.py, f.pz);
+      }
+    }
+    return null;
   }
 
   function instantiatePiece(def, position, rotationY, id, paidCost, open) {
@@ -312,9 +364,14 @@ export function createBuilding(game) {
     };
 
     if (def.light) {
-      const light = new THREE.PointLight(0xffb066, 1.2, 9, 2);
-      light.position.copy(position).add(new THREE.Vector3(0, def.size[1] * 0.5 + 0.3, 0));
-      light.userData.baseIntensity = 1.2;
+      // A fire is the only thing holding the dark off, so it needs to carry:
+      // a campfire lights a camp, a hearth lights a hall.
+      const intensity = def.fire ? 9 : 12;
+      const range = def.fire ? 22 : 30;
+      const light = new THREE.PointLight(0xffb066, intensity, range, 2);
+      light.position.copy(position).add(new THREE.Vector3(0, def.size[1] * 0.5 + 0.5, 0));
+      light.castShadow = false;
+      light.userData.baseIntensity = intensity;
       light.userData.phase = Math.random() * Math.PI * 2;
       game.scene.add(light);
       piece.light = light;
@@ -481,7 +538,9 @@ export function createBuilding(game) {
 
     // First ask the neighbours: an edge-to-edge fit beats the world grid, and
     // it's the only thing that works once a piece is turned off-axis.
-    const snapped = snapToNeighbour(def, ghostRotation, rayEnd);
+    // Ctrl is free placement: no snapping, just the grid under the cursor.
+    const freehand = game.input?.isDown?.('crouch');
+    const snapped = freehand ? null : snapToNeighbour(def, ghostRotation, rayEnd);
     let restY = groundY;   // the surface the piece ends up sitting on
     if (snapped) {
       ghost.position.copy(snapped);
@@ -512,7 +571,7 @@ export function createBuilding(game) {
     ghost.userData.rotationY = ghostRotation;
 
     const cost = costFor(def);
-    const blocked = pieces.some((p) => p.position.distanceTo(ghost.position) < 0.5);
+    const blocked = collidesWithPieces(def, ghostRotation, ghost.position.x, ghost.position.y, ghost.position.z);
     const grounded = Math.abs(restY - groundY) < GROUND_TOLERANCE;
     const supported = grounded
       || pieces.some((p) => p.support > COLLAPSE_THRESHOLD && p.position.distanceTo(ghost.position) < ADJACENCY_RADIUS);
