@@ -15,16 +15,16 @@ const RESPAWN_SECONDS = 15 * 60; // one in-game day
 export const NODE_KINDS = {
   birch: {
     tool: 'chop', tier: 0, hp: 60, radius: 0.65, skill: 'axes',
-    scale: [0.85, 1.35], drops: [{ item: 'wood', min: 3, max: 6 }],
+    scale: [0.85, 1.35], drops: [{ item: 'wood', min: 10, max: 10 }],
   },
   pine: {
     tool: 'chop', tier: 1, hp: 110, radius: 0.75, skill: 'axes',
     scale: [0.9, 1.5],
-    drops: [{ item: 'corewood', min: 3, max: 5 }, { item: 'resin', min: 0, max: 2 }],
+    drops: [{ item: 'corewood', min: 10, max: 10 }, { item: 'resin', min: 0, max: 2 }],
   },
   deadtree: {
     tool: 'chop', tier: 0, hp: 70, radius: 0.6, skill: 'axes',
-    scale: [0.8, 1.25], drops: [{ item: 'wood', min: 2, max: 4 }],
+    scale: [0.8, 1.25], drops: [{ item: 'wood', min: 10, max: 10 }],
   },
   boulder: {
     tool: 'mine', tier: 0, hp: 90, radius: 1.1, skill: 'pickaxes',
