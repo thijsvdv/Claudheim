@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { bake, put, heldGeometry } from '../entities/heldprops.js';
+import { makePieceGeometry } from '../systems/building.js';
 
 /**
  * Inventory icons, rendered rather than drawn: every item gets a tiny offscreen
@@ -194,6 +195,25 @@ function ensureGl() {
   return gl;
 }
 
+let pieceMat = null;
+const pieceGeoCache = new Map();
+const pieceUrls = new Map();
+
+/** Icon for a build piece, rendered from the geometry the world actually uses. */
+export function pieceIcon(def) {
+  if (!def) return null;
+  if (pieceUrls.has(def.id)) return pieceUrls.get(def.id);
+  let url = null;
+  try {
+    let geometry = pieceGeoCache.get(def.id);
+    if (!geometry) { geometry = makePieceGeometry(def); pieceGeoCache.set(def.id, geometry); }
+    pieceMat ??= new THREE.MeshStandardMaterial({ color: 0x9a7648, roughness: 0.75 });
+    url = renderGeometry(geometry, pieceMat);
+  } catch { url = null; }
+  pieceUrls.set(def.id, url);
+  return url;
+}
+
 const _box = new THREE.Box3();
 const _size = new THREE.Vector3();
 const _centre = new THREE.Vector3();
@@ -201,11 +221,14 @@ const _centre = new THREE.Vector3();
 function render(itemId) {
   const geometry = geometryFor(itemId);
   if (!geometry) return null;
+  iconMat ??= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.06 });
+  return renderGeometry(geometry, iconMat);
+}
+
+function renderGeometry(geometry, material) {
   const ctx = ensureGl();
   if (!ctx) return null;
-
-  iconMat ??= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.06 });
-  const mesh = new THREE.Mesh(geometry, iconMat);
+  const mesh = new THREE.Mesh(geometry, material);
 
   // Frame it: centre the sculpt on the origin, then scale its longest axis to
   // fill the ortho box with a little air around the edges.

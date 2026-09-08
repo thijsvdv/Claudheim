@@ -1,11 +1,11 @@
 import { Vector3 } from 'three';
 import { getItem } from '../data/items.js';
 import { getWeapon } from '../data/weapons.js';
-import { RECIPES } from '../data/recipes.js';
+import { RECIPES, BUILD_PIECES } from '../data/recipes.js';
 import { SKILLS, xpForLevel } from '../data/skills.js';
 import { getBiome } from '../data/biomes.js';
 import { renderVowTree } from './vowtree.js';
-import { paintIcon } from './itemicons.js';
+import { paintIcon, pieceIcon } from './itemicons.js';
 import { settings, setSetting } from '../core/settings.js';
 
 /**
@@ -512,6 +512,53 @@ export function createPanels(game) {
     return { el: elp, refresh };
   }
 
+  // -------------------------------------------------------------------- build
+  function buildBuildPanel() {
+    const elp = el('div', 'panel build-panel');
+    const header = el('div', 'panel-header', elp);
+    header.innerHTML = '<h2>Build</h2><p class="panel-hint">pick a piece &middot; '
+      + 'wheel sets distance, shift+wheel sets height &middot; R rotates</p>';
+    const body = el('div', 'panel-body build-body', elp);
+    const grid = el('div', 'build-grid', body);
+    const cards = [];
+
+    for (const def of BUILD_PIECES) {
+      const card = el('button', 'build-card', grid);
+      card.type = 'button';
+      const icon = el('div', 'build-card-icon', card);
+      const url = pieceIcon(def);
+      if (url) icon.style.backgroundImage = `url(${url})`;
+      else icon.style.backgroundColor = '#9a7648';
+      const name = el('div', 'build-card-name', card);
+      name.textContent = def.name;
+      const cost = el('div', 'build-card-cost', card);
+      card.addEventListener('click', () => {
+        game.building?.setPiece?.(def.id);
+        closeAll();
+      });
+      cards.push({ def, card, cost });
+    }
+
+    return {
+      el: elp,
+      refresh() {
+        const current = game.building?.pieceId;
+        for (const { def, card, cost } of cards) {
+          card.classList.toggle('selected', def.id === current);
+          let affordable = true;
+          const parts = [];
+          for (const [id, need] of Object.entries(def.cost ?? {})) {
+            const have = game.inventory?.count?.(id) ?? 0;
+            if (have < need) affordable = false;
+            parts.push(`${getItem(id)?.name ?? titleCase(id)} ${have}/${need}`);
+          }
+          cost.textContent = parts.join(' · ');
+          card.classList.toggle('unaffordable', !affordable);
+        }
+      },
+    };
+  }
+
   // --------------------------------------------------------------------- menu
   function buildMenuPanel() {
     const elp = el('div', 'panel menu-panel');
@@ -698,6 +745,7 @@ export function createPanels(game) {
     panels.vowtree = buildVowtreePanel();
     panels.map = buildMapPanel();
     panels.menu = buildMenuPanel();
+    panels.build = buildBuildPanel();
     for (const p of Object.values(panels)) root.appendChild(p.el);
 
     // A shared close button + backdrop click, since panels are full-bleed.
@@ -733,6 +781,9 @@ export function createPanels(game) {
       if (input.wasPressed('crafting')) openPanelByName('crafting');
       if (input.wasPressed('vowtree')) openPanelByName('vowtree');
       if (input.wasPressed('map')) openPanelByName('map');
+      // B opens the piece picker while the hammer is out; otherwise it toggles
+      // build mode (building.js owns that half).
+      if (input.wasPressed('build') && game.building?.buildMode) openPanelByName('build');
       if (input.wasPressed('escape') && performance.now() - escapeGuard > 350) {
         if (openPanel) closeAll();
         else openPanelByName('menu');

@@ -134,8 +134,10 @@ export function createHud(game) {
     const buildCost = el('div', 'hud-build-cost', build);
     const buildWhy = el('div', 'hud-build-why', build);
     const buildHint = el('div', 'hud-build-hint', build);
+    const buildRange = el('div', 'hud-build-range', build);
     buildHint.innerHTML =
-      '<kbd>wheel</kbd> piece <kbd>R</kbd> rotate <kbd>LMB</kbd> place <kbd>RMB</kbd> remove';
+      '<kbd>B</kbd> pieces <kbd>wheel</kbd> distance <kbd>shift+wheel</kbd> height '
+      + '<kbd>R</kbd> rotate <kbd>LMB</kbd> place <kbd>RMB</kbd> remove';
 
     const toasts = el('div', 'hud-toasts', root);
 
@@ -157,7 +159,7 @@ export function createHud(game) {
       boss, bossName, bossFill, bossHp,
       vignette, desat, crosshair, interactPrompt, interactLabel,
       hpBar, stamBar, eitrBar, buffs, slots, toasts, death, deathLine,
-      build, buildName, buildCost, buildWhy,
+      build, buildName, buildCost, buildWhy, buildRange,
     };
 
     // Compass ticks: one per 15deg across a wide strip, scrolled via transform.
@@ -437,6 +439,11 @@ export function createHud(game) {
       span.classList.toggle('have', have >= need);
       span.classList.toggle('need', have < need);
     }
+
+    const dist = building.buildDistance ?? 0;
+    const height = building.buildHeight ?? 0;
+    refs.buildRange.textContent =
+      `${dist.toFixed(1)} m out · ${height >= 0 ? '+' : ''}${height.toFixed(2)} m up`;
 
     const ok = building.ghostValid;
     refs.build.classList.toggle('invalid', !ok);

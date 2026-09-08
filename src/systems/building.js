@@ -5,7 +5,9 @@ import { createWheelNotcher } from '../core/wheel.js';
 
 const GRID = 2; // metres, matches the piece footprint
 const ROTATE_STEP = Math.PI / 4; // 45 degrees
-const REACH = 6; // metres: ghost snapping, placement and removal all use this
+const REACH = 6;          // metres: how far away you can remove a piece
+const DIST_MIN = 1.5, DIST_MAX = 9, DIST_STEP = 0.5;
+const HEIGHT_MIN = -3, HEIGHT_MAX = 8, HEIGHT_STEP = 0.25;
 const SNAP_RADIUS = 1.6; // metres: how far the ghost will jump to meet a neighbour's edge
 const ADJACENCY_RADIUS = 3.0; // metres between piece centres to count as "connected"
 const GROUND_TOLERANCE = 0.4; // metres of slack between a piece's underside and the terrain
@@ -22,6 +24,54 @@ const DEFAULT_INTEGRITY = 0.6; // stations/hearth lack an `integrity` field in d
  * (or the terrain, if none). It gets most of the "snap to existing pieces"
  * feel without needing per-face collision geometry.
  */
+export function makePieceGeometry(def) {
+  if (!def.stairs) return new THREE.BoxGeometry(def.size[0], def.size[1], def.size[2]);
+
+  // Stairs climb along +Z: eight treads under the same 2x2x2 envelope the
+  // snapping and support code assumes, so they stack like any other piece.
+  const [w, h, d] = def.size;
+  const steps = 8;
+  const parts = [];
+  for (let i = 0; i < steps; i++) {
+    const stepH = (h / steps) * (i + 1);
+    const g = new THREE.BoxGeometry(w, stepH, d / steps);
+    g.translate(0, -h / 2 + stepH / 2, -d / 2 + (d / steps) * (i + 0.5));
+    parts.push(g);
+  }
+  const merged = mergeGeometries(parts);
+  for (const g of parts) g.dispose();
+  return merged;
+}
+
+/** Minimal position-only merge: every part here is a plain BoxGeometry. */
+function mergeGeometries(parts) {
+  let vertexCount = 0;
+  for (const g of parts) vertexCount += g.attributes.position.count;
+  const pos = new Float32Array(vertexCount * 3);
+  const nrm = new Float32Array(vertexCount * 3);
+  const uv = new Float32Array(vertexCount * 2);
+  const index = [];
+  let vOffset = 0, pOffset = 0, uOffset = 0;
+  for (const g of parts) {
+    const gp = g.attributes.position.array;
+    const gn = g.attributes.normal.array;
+    const gu = g.attributes.uv.array;
+    pos.set(gp, pOffset); nrm.set(gn, pOffset); uv.set(gu, uOffset);
+    const gi = g.index ? g.index.array : null;
+    const count = g.attributes.position.count;
+    if (gi) for (let i = 0; i < gi.length; i++) index.push(gi[i] + vOffset);
+    else for (let i = 0; i < count; i++) index.push(i + vOffset);
+    vOffset += count; pOffset += gp.length; uOffset += gu.length;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  out.setIndex(index);
+  out.computeBoundingSphere();
+  return out;
+}
+
 export function createBuilding(game) {
   const pieces = [];
   const byId = new Map();
@@ -33,6 +83,8 @@ export function createBuilding(game) {
   let manualToggle = false;
   let pieceIndex = 0;
   let ghostRotation = 0;
+  let buildDistance = 4;
+  let buildHeight = 0;
   let debugColours = false;
   const wheel = createWheelNotcher();
 
@@ -193,54 +245,6 @@ export function createBuilding(game) {
   function doorHandleMaterial() {
     handleMat ??= new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.45, metalness: 0.6 });
     return handleMat;
-  }
-
-  function makePieceGeometry(def) {
-    if (!def.stairs) return new THREE.BoxGeometry(def.size[0], def.size[1], def.size[2]);
-
-    // Stairs climb along +Z: eight treads under the same 2x2x2 envelope the
-    // snapping and support code assumes, so they stack like any other piece.
-    const [w, h, d] = def.size;
-    const steps = 8;
-    const parts = [];
-    for (let i = 0; i < steps; i++) {
-      const stepH = (h / steps) * (i + 1);
-      const g = new THREE.BoxGeometry(w, stepH, d / steps);
-      g.translate(0, -h / 2 + stepH / 2, -d / 2 + (d / steps) * (i + 0.5));
-      parts.push(g);
-    }
-    const merged = mergeGeometries(parts);
-    for (const g of parts) g.dispose();
-    return merged;
-  }
-
-  /** Minimal position-only merge: every part here is a plain BoxGeometry. */
-  function mergeGeometries(parts) {
-    let vertexCount = 0;
-    for (const g of parts) vertexCount += g.attributes.position.count;
-    const pos = new Float32Array(vertexCount * 3);
-    const nrm = new Float32Array(vertexCount * 3);
-    const uv = new Float32Array(vertexCount * 2);
-    const index = [];
-    let vOffset = 0, pOffset = 0, uOffset = 0;
-    for (const g of parts) {
-      const gp = g.attributes.position.array;
-      const gn = g.attributes.normal.array;
-      const gu = g.attributes.uv.array;
-      pos.set(gp, pOffset); nrm.set(gn, pOffset); uv.set(gu, uOffset);
-      const gi = g.index ? g.index.array : null;
-      const count = g.attributes.position.count;
-      if (gi) for (let i = 0; i < gi.length; i++) index.push(gi[i] + vOffset);
-      else for (let i = 0; i < count; i++) index.push(i + vOffset);
-      vOffset += count; pOffset += gp.length; uOffset += gu.length;
-    }
-    const out = new THREE.BufferGeometry();
-    out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
-    out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    out.setIndex(index);
-    out.computeBoundingSphere();
-    return out;
   }
 
   function instantiatePiece(def, position, rotationY, id, paidCost, open) {
@@ -469,7 +473,8 @@ export function createBuilding(game) {
     // under the body. Direction is still the camera's, so it tracks the
     // crosshair.
     aimOrigin();
-    rayEnd.copy(camDir).multiplyScalar(REACH).add(camPos);
+    rayEnd.copy(camDir).multiplyScalar(buildDistance).add(camPos);
+    rayEnd.y += buildHeight;
 
     const groundY = game.world?.heightAt ? game.world.heightAt(rayEnd.x, rayEnd.z) : 0;
     if (rayEnd.y < groundY) rayEnd.y = groundY;
@@ -494,8 +499,13 @@ export function createBuilding(game) {
           if (top > topY) topY = top;
         }
       }
-      ghost.position.set(snappedX, topY + def.size[1] / 2, snappedZ);
-      restY = topY;
+      // Shift+wheel means "put it at this height", so once a height offset is
+      // set it wins over stacking; otherwise the piece rests on whatever is
+      // already in the cell.
+      let centreY = topY + def.size[1] / 2;
+      if (buildHeight !== 0) centreY = Math.max(rayEnd.y, groundY + def.size[1] / 2);
+      ghost.position.set(snappedX, centreY, snappedZ);
+      restY = centreY - def.size[1] / 2;
     }
     ghost.rotation.y = ghostRotation;
     ghost.userData.position.copy(ghost.position);
@@ -623,6 +633,15 @@ export function createBuilding(game) {
     },
     /** The piece the hammer is currently holding, for the HUD. */
     get piece() { return currentDef(); },
+    get pieceId() { return currentDef().id; },
+    get buildDistance() { return buildDistance; },
+    get buildHeight() { return buildHeight; },
+    /** Choose what the hammer is holding — the build menu calls this. */
+    setPiece(id) {
+      const i = BUILD_PIECES.findIndex((p) => p.id === id);
+      if (i >= 0) pieceIndex = i;
+      return BUILD_PIECES[pieceIndex];
+    },
     get ghostValid() { return !!ghost.userData.valid; },
     get ghostReason() { return ghost.userData.reason ?? null; },
     get debugColours() { return debugColours; },
@@ -631,7 +650,9 @@ export function createBuilding(game) {
 
     fixedUpdate(dt) {
       const hammerEquipped = !!game.inventory?.equipped?.builder;
-      if (game.input.wasPressed('build')) manualToggle = !manualToggle;
+      // With the hammer out, B belongs to the piece picker (ui/panels.js); it
+      // only toggles build mode when you aren't holding one.
+      if (game.input.wasPressed('build') && !hammerEquipped) manualToggle = !manualToggle;
       const wantBuildMode = hammerEquipped || manualToggle;
       if (wantBuildMode !== buildMode) {
         buildMode = wantBuildMode;
@@ -641,7 +662,13 @@ export function createBuilding(game) {
       if (buildMode) {
         if (game.input.wasPressed('rotate')) ghostRotation = (ghostRotation + ROTATE_STEP) % (Math.PI * 2);
         const step = wheel.take(dt);
-        if (step) pieceIndex = (pieceIndex + step + BUILD_PIECES.length) % BUILD_PIECES.length;
+        if (step) {
+          if (game.input.isDown('sprint')) {
+            buildHeight = clamp(buildHeight - step * HEIGHT_STEP, HEIGHT_MIN, HEIGHT_MAX);
+          } else {
+            buildDistance = clamp(buildDistance - step * DIST_STEP, DIST_MIN, DIST_MAX);
+          }
+        }
         updateGhost();
         if (game.input.mouseWasPressed(0)) tryPlace();
         if (game.input.mouseWasPressed(2)) {

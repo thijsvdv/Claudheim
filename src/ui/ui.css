@@ -521,6 +521,13 @@ button {
 }
 .hud-build-ing.have { color: var(--moss); }
 .hud-build-ing.need { color: var(--blood); }
+.hud-build-range {
+  margin-top: 3px;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  color: var(--bone-dim);
+  font-variant-numeric: tabular-nums;
+}
 .hud-build-why {
   margin-top: 2px;
   font-size: 0.66rem;
@@ -1022,4 +1029,46 @@ button {
   color: #e8c85a;
   background: rgba(232, 200, 90, 0.14);
   border-color: rgba(232, 200, 90, 0.55);
+}
+
+/* build picker */
+.build-body { padding-top: 4px; }
+.build-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+  max-width: 780px;
+}
+.build-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px 10px;
+  background: rgba(216, 210, 196, 0.04);
+  border: 1px solid var(--hairline);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.build-card:hover { background: rgba(216, 210, 196, 0.12); border-color: var(--hairline-strong); }
+.build-card.selected { border-color: rgba(232, 200, 90, 0.7); background: rgba(232, 200, 90, 0.1); }
+.build-card.unaffordable { opacity: 0.45; }
+.build-card-icon {
+  width: 64px; height: 64px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+.build-card-name {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  color: var(--bone);
+}
+.build-card-cost {
+  font-size: 0.66rem;
+  letter-spacing: 0.03em;
+  color: var(--bone-dim);
+  text-align: center;
 }
