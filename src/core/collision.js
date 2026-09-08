@@ -62,7 +62,10 @@ export function resolveBodyCollisions(game, body, opts = {}) {
       let top = piece.position.y + h / 2;
       if (piece.def.stairs) {
         // Physically a ramp climbing along +Z, whatever the treads look like.
-        const along = (lz + halfD) / (halfD * 2);
+        // Measured on the piece's true depth, not the body-inflated one, so the
+        // last tread really is at full height and you can step straight off it
+        // onto a floor rather than having to jump.
+        const along = (lz + d / 2) / d;
         top = bottom + h * Math.min(1, Math.max(0, along));
       }
       if (top <= pos.y + step) {                 // a floor, not a wall
