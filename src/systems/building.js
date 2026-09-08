@@ -260,43 +260,18 @@ export function createBuilding(game) {
    */
   function snapToNeighbour(def, rotationY, aim) {
     if (!snappable(def)) return null;
-
-    // Rank every nearby snap point by how close it is to the cursor.
-    const targets = [];
+    const ranked = [];
     for (const p of pieces) {
       if (!p.anchors) continue;
       if (p.position.distanceToSquared(aim) > 64) continue;
       for (const a of p.anchors) {
         const dsq = a.distanceToSquared(aim);
-        if (dsq <= SNAP_RADIUS * SNAP_RADIUS) targets.push({ a, dsq });
+        if (dsq <= SNAP_RADIUS * SNAP_RADIUS) ranked.push({ a, dsq });
       }
     }
-    if (!targets.length) return null;
-    targets.sort((x, y) => x.dsq - y.dsq);
-
-    const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
-    const locals = localAnchors(def);
-
-    // Walk out from the cursor: for each candidate point, hang the ghost off
-    // whichever of its own points leaves it nearest the cursor, and take the
-    // first fit that doesn't bury the piece inside something already built.
-    for (let i = 0; i < Math.min(targets.length, 12); i++) {
-      const t = targets[i].a;
-      const fits = [];
-      for (const b of locals) {
-        const bx = b.x * cos + b.z * sin;
-        const bz = -b.x * sin + b.z * cos;
-        const px = t.x - bx, py = t.y - b.y, pz = t.z - bz;
-        const dx = px - aim.x, dy = py - aim.y, dz = pz - aim.z;
-        fits.push({ px, py, pz, dsq: dx * dx + dy * dy + dz * dz });
-      }
-      fits.sort((x, y) => x.dsq - y.dsq);
-      for (const f of fits) {
-        if (collidesWithPieces(def, rotationY, f.px, f.py, f.pz)) continue;
-        return new THREE.Vector3(f.px, f.py, f.pz);
-      }
-    }
-    return null;
+    if (!ranked.length) return null;
+    ranked.sort((x, y) => x.dsq - y.dsq);
+    return fitToTargets(def, rotationY, aim, ranked, 12);
   }
 
   function instantiatePiece(def, position, rotationY, id, paidCost, open) {
@@ -352,6 +327,7 @@ export function createBuilding(game) {
       mesh.receiveShadow = true;
     }
     mesh.rotation.y = rotationY;
+    mesh.traverse((o) => { o.userData.pieceId = id; });
     game.scene.add(mesh);
 
     const piece = {
@@ -517,6 +493,213 @@ export function createBuilding(game) {
     else game.camera.getWorldPosition(camPos);
   }
 
+  const aimRay = new THREE.Raycaster();
+  const _hitNormal = new THREE.Vector3();
+  const _hitPoint = new THREE.Vector3();
+  const _march = new THREE.Vector3();
+  const MAX_REACH = 12;
+
+  /** Where the ray meets the terrain, or null if it never does. */
+  function marchToGround(origin, dir, maxDist) {
+    const step = 0.25;
+    let prev = origin.y - (game.world?.heightAt?.(origin.x, origin.z) ?? 0);
+    for (let t = step; t <= maxDist; t += step) {
+      _march.copy(dir).multiplyScalar(t).add(origin);
+      const gap = _march.y - (game.world?.heightAt?.(_march.x, _march.z) ?? 0);
+      if (gap <= 0) {
+        // Bisect once or twice for a tidy contact point.
+        let lo = t - step, hi = t;
+        for (let k = 0; k < 4; k++) {
+          const mid = (lo + hi) / 2;
+          _march.copy(dir).multiplyScalar(mid).add(origin);
+          const g = _march.y - (game.world?.heightAt?.(_march.x, _march.z) ?? 0);
+          if (g <= 0) hi = mid; else lo = mid;
+        }
+        _march.copy(dir).multiplyScalar(hi).add(origin);
+        return { point: _march.clone(), dist: hi, normal: new THREE.Vector3(0, 1, 0), piece: null };
+      }
+      prev = gap;
+    }
+    return null;
+  }
+
+  /**
+   * What the crosshair is pointing at: the nearest placed piece, else the
+   * ground. The wheel's distance acts as a leash — scroll in and the cursor
+   * floats in front of whatever it would otherwise hit.
+   */
+  function aimHit() {
+    aimOrigin();
+    const reach = Math.min(MAX_REACH, Math.max(buildDistance, 1.5));
+
+    let best = null;
+    const meshes = [];
+    for (const p of pieces) meshes.push(p.mesh);
+    if (meshes.length) {
+      aimRay.set(camPos, camDir);
+      aimRay.near = 0.05;
+      aimRay.far = reach;
+      const hits = aimRay.intersectObjects(meshes, true);
+      for (const hit of hits) {
+        const piece = byId.get(hit.object.userData.pieceId);
+        if (!piece) continue;
+        _hitPoint.copy(hit.point);
+        _hitNormal.set(0, 1, 0);
+        if (hit.face) {
+          _hitNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld).normalize();
+        }
+        best = { piece, point: _hitPoint.clone(), normal: _hitNormal.clone(), dist: hit.distance };
+        break;
+      }
+    }
+
+    const ground = marchToGround(camPos, camDir, reach);
+    if (ground && (!best || ground.dist < best.dist)) best = ground;
+
+    if (!best) {
+      // Nothing within reach: hang the cursor at arm's length.
+      const point = camDir.clone().multiplyScalar(reach).add(camPos);
+      best = { piece: null, point, normal: new THREE.Vector3(0, 1, 0), dist: reach };
+    }
+    // Scrolling in pulls the cursor short of the surface, for placing in front
+    // of things rather than against them.
+    if (buildDistance < best.dist - 0.05) {
+      best = {
+        piece: null, normal: new THREE.Vector3(0, 1, 0), dist: buildDistance,
+        point: camDir.clone().multiplyScalar(buildDistance).add(camPos),
+      };
+    }
+    best.point.y += buildHeight;
+    return best;
+  }
+
+  /** Half the piece's extent along a world direction. */
+  function extentAlong(def, rotationY, dir) {
+    const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
+    const [w, h, d] = def.size;
+    return Math.abs(dir.x * cos + dir.z * -sin) * (w / 2)
+      + Math.abs(dir.y) * (h / 2)
+      + Math.abs(dir.x * sin + dir.z * cos) * (d / 2);
+  }
+
+  const _dir = new THREE.Vector3();
+  const _ideal = new THREE.Vector3();
+
+  /**
+   * Snap against the piece under the crosshair.
+   *
+   * The snap point nearest the cursor says *where* on that piece you mean; the
+   * face it belongs to says which way the new piece should go — point at a
+   * wall's top edge and the next wall goes on top of it, point at its side and
+   * the run continues sideways. The ghost then attaches by whichever of its own
+   * points lands it closest to sitting flush against that face, skipping any
+   * fit that would bury it in what's already there.
+   */
+  function snapToHit(def, rotationY, hit) {
+    const piece = hit.piece;
+    if (!piece?.anchors) return null;
+    const locals = localAnchors(piece.def);
+
+    let ti = -1, bestSq = Infinity;
+    for (let i = 0; i < piece.anchors.length; i++) {
+      const dsq = piece.anchors[i].distanceToSquared(hit.point);
+      if (dsq < bestSq) { bestSq = dsq; ti = i; }
+    }
+    if (ti < 0) return null;
+    const target = piece.anchors[ti];
+    const lt = locals[ti];
+
+    // Which face does that point belong to? Ignore the piece's thin axis (a
+    // wall's own face) unless it has nothing else, since stacking through it
+    // is never what anyone means.
+    const [tw, th, td] = piece.def.size;
+    const halves = [tw / 2, th / 2, td / 2];
+    const rel = [lt.x / (halves[0] || 1), lt.y / (halves[1] || 1), lt.z / (halves[2] || 1)];
+    const maxHalf = Math.max(...halves);
+
+    // Cursor in the target's own frame, to break ties between equally extreme axes.
+    const cos = Math.cos(piece.rotationY), sin = Math.sin(piece.rotationY);
+    const dx = hit.point.x - piece.position.x;
+    const dz = hit.point.z - piece.position.z;
+    const cursorLocal = [
+      (dx * cos - dz * sin) / (halves[0] || 1),
+      (hit.point.y - piece.position.y) / (halves[1] || 1),
+      (dx * sin + dz * cos) / (halves[2] || 1),
+    ];
+
+    let axis = -1, axisScore = -Infinity;
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(rel[i]) < 0.999) continue;             // not on this face
+      if (halves[i] < maxHalf * 0.35 && axis >= 0) continue;
+      const score = Math.abs(cursorLocal[i]) + (halves[i] < maxHalf * 0.35 ? -1 : 0);
+      if (score > axisScore) { axisScore = score; axis = i; }
+    }
+    if (axis < 0) return null;
+
+    const sign = Math.sign(rel[axis]) || 1;
+    if (axis === 0) _dir.set(cos * sign, 0, -sin * sign);
+    else if (axis === 1) _dir.set(0, sign, 0);
+    else _dir.set(sin * sign, 0, cos * sign);
+
+    const reach = extentAlong(piece.def, piece.rotationY, _dir) + extentAlong(def, rotationY, _dir);
+    _ideal.copy(piece.position).addScaledVector(_dir, reach);
+
+    // Attach by one of our own points on the face that meets it, landing as
+    // close to flush as the two shapes allow.
+    const gcos = Math.cos(rotationY), gsin = Math.sin(rotationY);
+    const fits = [];
+    for (const b of localAnchors(def)) {
+      const bx = b.x * gcos + b.z * gsin;
+      const bz = -b.x * gsin + b.z * gcos;
+      if (bx * _dir.x + b.y * _dir.y + bz * _dir.z > 0.01) continue;   // must face the target
+      const px = target.x - bx, py = target.y - b.y, pz = target.z - bz;
+      const ex = px - _ideal.x, ey = py - _ideal.y, ez = pz - _ideal.z;
+      fits.push({ px, py, pz, dsq: ex * ex + ey * ey + ez * ez });
+    }
+    fits.sort((x, y) => x.dsq - y.dsq);
+    for (const f of fits) {
+      if (collidesWithPieces(def, rotationY, f.px, f.py, f.pz)) continue;
+      return new THREE.Vector3(f.px, f.py, f.pz);
+    }
+    return null;
+  }
+
+  /**
+   * Given candidate target points in order of preference, find the first
+   * placement that doesn't collide.
+   */
+  function fitToTargets(def, rotationY, cursor, ranked, limit) {
+    const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
+    const locals = localAnchors(def);
+    for (let i = 0; i < Math.min(ranked.length, limit); i++) {
+      const t = ranked[i].a;
+      const fits = [];
+      for (const b of locals) {
+        const bx = b.x * cos + b.z * sin;
+        const bz = -b.x * sin + b.z * cos;
+        const px = t.x - bx, py = t.y - b.y, pz = t.z - bz;
+        const dx = px - cursor.x, dy = py - cursor.y, dz = pz - cursor.z;
+        fits.push({ px, py, pz, dsq: dx * dx + dy * dy + dz * dz });
+      }
+      fits.sort((x, y) => x.dsq - y.dsq);
+      for (const f of fits) {
+        if (collidesWithPieces(def, rotationY, f.px, f.py, f.pz)) continue;
+        return new THREE.Vector3(f.px, f.py, f.pz);
+      }
+    }
+    return null;
+  }
+
+  function nearestAnchor(piece, point) {
+    if (!piece?.anchors) return null;
+    let best = null, bestSq = Infinity;
+    for (const a of piece.anchors) {
+      const dsq = a.distanceToSquared(point);
+      if (dsq < bestSq) { bestSq = dsq; best = a; }
+    }
+    return best;
+  }
+
   function updateGhost() {
     const def = currentDef();
     if (ghost.userData.defId !== def.id) {
@@ -529,41 +712,34 @@ export function createBuilding(game) {
     // ray meets the ground almost at the player's feet, so the ghost lands
     // under the body. Direction is still the camera's, so it tracks the
     // crosshair.
-    aimOrigin();
-    rayEnd.copy(camDir).multiplyScalar(buildDistance).add(camPos);
-    rayEnd.y += buildHeight;
+    const hit = aimHit();
+    rayEnd.copy(hit.point);
 
     const groundY = game.world?.heightAt ? game.world.heightAt(rayEnd.x, rayEnd.z) : 0;
-    if (rayEnd.y < groundY) rayEnd.y = groundY;
 
-    // First ask the neighbours: an edge-to-edge fit beats the world grid, and
-    // it's the only thing that works once a piece is turned off-axis.
-    // Ctrl is free placement: no snapping, just the grid under the cursor.
+    // Ctrl is free placement: no snapping, just the cursor.
     const freehand = game.input?.isDown?.('crouch');
-    const snapped = freehand ? null : snapToNeighbour(def, ghostRotation, rayEnd);
+    let snapped = null;
+    if (!freehand) {
+      // Snap against whatever you're actually pointing at first; only fall back
+      // to "nearest point anywhere" when the cursor is on open ground.
+      if (hit.piece) snapped = snapToHit(def, ghostRotation, hit);
+      if (!snapped) snapped = snapToNeighbour(def, ghostRotation, rayEnd);
+    }
     let restY = groundY;   // the surface the piece ends up sitting on
     if (snapped) {
       ghost.position.copy(snapped);
       restY = snapped.y - def.size[1] / 2;
     } else {
-      const snappedX = Math.round(rayEnd.x / GRID) * GRID;
-      const snappedZ = Math.round(rayEnd.z / GRID) * GRID;
-
-      // Nothing to click onto: fall back to the grid, stacking on the tallest
-      // piece already in this cell, else the ground.
-      let topY = groundY;
-      for (const p of pieces) {
-        if (Math.abs(p.position.x - snappedX) < 1.1 && Math.abs(p.position.z - snappedZ) < 1.1) {
-          const top = p.position.y + p.def.size[1] / 2;
-          if (top > topY) topY = top;
-        }
-      }
-      // Shift+wheel means "put it at this height", so once a height offset is
-      // set it wins over stacking; otherwise the piece rests on whatever is
-      // already in the cell.
-      let centreY = topY + def.size[1] / 2;
-      if (buildHeight !== 0) centreY = Math.max(rayEnd.y, groundY + def.size[1] / 2);
-      ghost.position.set(snappedX, centreY, snappedZ);
+      // Free ground: the piece sits where the cursor is, on the surface. No
+      // world grid — the structure's own snap points are the grid.
+      const x = freehand ? rayEnd.x : Math.round(rayEnd.x / GRID) * GRID;
+      const z = freehand ? rayEnd.z : Math.round(rayEnd.z / GRID) * GRID;
+      const surface = game.world?.heightAt ? game.world.heightAt(x, z) : groundY;
+      const centreY = buildHeight !== 0
+        ? Math.max(rayEnd.y, surface + def.size[1] / 2)
+        : surface + def.size[1] / 2;
+      ghost.position.set(x, centreY, z);
       restY = centreY - def.size[1] / 2;
     }
     ghost.rotation.y = ghostRotation;
@@ -572,7 +748,10 @@ export function createBuilding(game) {
 
     const cost = costFor(def);
     const blocked = collidesWithPieces(def, ghostRotation, ghost.position.x, ghost.position.y, ghost.position.z);
-    const grounded = Math.abs(restY - groundY) < GROUND_TOLERANCE;
+    // Ground check under the piece itself, not under the cursor.
+    const groundUnder = game.world?.heightAt
+      ? game.world.heightAt(ghost.position.x, ghost.position.z) : groundY;
+    const grounded = Math.abs(restY - groundUnder) < GROUND_TOLERANCE;
     const supported = grounded
       || pieces.some((p) => p.support > COLLAPSE_THRESHOLD && p.position.distanceTo(ghost.position) < ADJACENCY_RADIUS);
     const affordable = canAfford(cost);
