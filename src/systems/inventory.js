@@ -72,6 +72,21 @@ export function createInventory(game) {
     return true;
   }
 
+  // Refusing a pickup is worth saying out loud, but not sixty times a second.
+  let lastRefusal = -Infinity;
+  function refused() {
+    const now = game.time?.elapsed ?? 0;
+    if (now - lastRefusal < 3) return;
+    lastRefusal = now;
+    game.bus.emit('notice', { text: 'Too heavy to carry any more.' });
+  }
+
+  function spill(itemId, count, position) {
+    refused();
+    const at = position ?? game.player?.position;
+    if (at) game.get?.('spawner')?.spawnPickup?.(itemId, count, at);
+  }
+
   function recalcWeight() {
     let w = 0;
     for (const s of slots) {
@@ -131,6 +146,30 @@ export function createInventory(game) {
 
     add,
     remove,
+    /**
+     * Put a stack (or part of one) on the ground in front of the player.
+     * Returns how many actually left the pack.
+     */
+    drop(itemId, amount) {
+      const want = Math.max(1, Math.floor(amount || 1));
+      const have = itemCount(itemId);
+      const count = Math.min(want, have);
+      if (count <= 0 || !remove(itemId, count)) return 0;
+      const player = game.player;
+      const at = player?.position?.clone?.() ?? null;
+      if (at) {
+        const fwd = game.cameraRig?.forward;
+        if (fwd) { at.x += fwd.x * 1.1; at.z += fwd.z * 1.1; }
+        at.y += 0.2;
+        game.get?.('spawner')?.spawnPickup?.(itemId, count, at, { delay: 1.5 });
+      }
+      game.bus.emit('item:dropped', { id: itemId, count });
+      return count;
+    },
+
+    /** False once you're over capacity: world pickups stop, crafting doesn't. */
+    canCarry() { return !inv.overweight; },
+    refuseCarry: refused,
     count: itemCount,
     selectHotbar,
     equipShield: (id) => equipToSlot('shield', id),
@@ -140,7 +179,12 @@ export function createInventory(game) {
       // Harvest drops are minted by world.resources.damage(); this is the only
       // place they turn into carried items.
       game.bus.on('resource:harvested', (e) => {
-        for (const d of e?.drops ?? []) add(d.item, d.count);
+        for (const d of e?.drops ?? []) {
+          // Overloaded: it comes out of the tree, but not into your pack. The
+          // drops sit on the ground instead of vanishing.
+          if (inv.overweight) spill(d.item, d.count, e?.position);
+          else add(d.item, d.count);
+        }
       });
 
       // The only hand-holding the game does: a starting kit for a fresh player.

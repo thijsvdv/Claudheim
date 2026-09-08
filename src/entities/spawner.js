@@ -124,7 +124,7 @@ export function createSpawner(game) {
     return false;
   }
 
-  function spawnPickup(itemId, count, position) {
+  function spawnPickup(itemId, count, position, opts) {
     const item = getItem(itemId);
     const mat = new THREE.MeshStandardMaterial({
       color: item?.colour ?? 0xffffff, emissive: item?.colour ?? 0x222222, emissiveIntensity: 0.35,
@@ -133,7 +133,12 @@ export function createSpawner(game) {
     mesh.position.copy(position).add(new THREE.Vector3((rng() - 0.5) * 0.6, 0.3, (rng() - 0.5) * 0.6));
     mesh.userData.noCameraCollision = true;
     game.scene.add(mesh);
-    pickups.push({ mesh, itemId, count, base: mesh.position.clone(), life: PICKUP_LIFE, phase: rng() * Math.PI * 2 });
+    pickups.push({
+      mesh, itemId, count, base: mesh.position.clone(), life: PICKUP_LIFE,
+      phase: rng() * Math.PI * 2,
+      // Something you just dropped shouldn't leap back into your hands.
+      armIn: opts?.delay ?? 0,
+    });
   }
 
   function tickPickups(dt) {
@@ -141,11 +146,18 @@ export function createSpawner(game) {
     for (let i = pickups.length - 1; i >= 0; i--) {
       const p = pickups[i];
       p.life -= dt;
+      if (p.armIn > 0) p.armIn -= dt;
       let gone = p.life <= 0;
-      if (!gone && player && !player.isDead && p.mesh.position.distanceTo(player.position) < PICKUP_RADIUS) {
-        game.inventory?.add?.(p.itemId, p.count);
-        game.bus.emit('item:gained', { item: p.itemId, count: p.count });
-        gone = true;
+      if (!gone && p.armIn <= 0 && player && !player.isDead
+          && p.mesh.position.distanceTo(player.position) < PICKUP_RADIUS) {
+        // Overloaded: leave it lying there. inventory.add() already announces
+        // what was picked up, so nothing to emit here.
+        if (game.inventory?.canCarry?.() === false) {
+          game.inventory.refuseCarry?.();
+        } else {
+          game.inventory?.add?.(p.itemId, p.count);
+          gone = true;
+        }
       }
       if (gone) { game.scene.remove(p.mesh); pickups.splice(i, 1); }
     }

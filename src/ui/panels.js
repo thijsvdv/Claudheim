@@ -110,7 +110,7 @@ export function createPanels(game) {
   function buildInventoryPanel() {
     const elp = el('div', 'panel inventory-panel');
     const header = el('div', 'panel-header', elp);
-    header.innerHTML = '<h2>Satchel</h2><p class="panel-hint">top row is the hotbar &mdash; drag an item onto 1-8 to bind it &middot; right-click food to eat</p>';
+    header.innerHTML = '<h2>Satchel</h2><p class="panel-hint">top row is the hotbar &mdash; drag an item onto 1-8 to bind it &middot; click food to eat &middot; right-click to drop (shift for one)</p>';
     const body = el('div', 'panel-body inventory-body', elp);
 
     // Per systems/inventory.js there is no separate "weapon slot" — the active
@@ -197,19 +197,35 @@ export function createPanels(game) {
       const tmp = slots[to]; slots[to] = slots[from]; slots[from] = tmp;
       refresh(true);
     });
+    // Right-click drops the stack on the ground in front of you; shift drops a
+    // single item out of it.
     grid.addEventListener('contextmenu', (e) => {
       const target = e.target.closest('.inv-slot');
       if (!target) return;
       e.preventDefault();
       const stack = game.inventory?.slots?.[Number(target.dataset.index)];
+      if (!stack) return;
+      try {
+        game.inventory?.drop?.(stack.id, e.shiftKey ? 1 : stack.count);
+        refresh(true);
+      } catch (err) { game.debug?.('drop failed', err); }
+    });
+
+    // A plain click (not a drag) eats food.
+    grid.addEventListener('click', (e) => {
+      const target = e.target.closest('.inv-slot');
+      if (!target) return;
+      const stack = game.inventory?.slots?.[Number(target.dataset.index)];
       const def = stack && getItem(stack.id);
-      if (def?.kind === 'food') {
-        // survival.eat() only manages the buff timer; it doesn't touch the
-        // inventory, so consuming the item is on us.
-        try {
-          if (game.survival?.eat?.(stack.id)) game.inventory?.remove?.(stack.id, 1);
-        } catch (err) { game.debug?.('eat failed', err); }
-      }
+      if (def?.kind !== 'food') return;
+      // survival.eat() only manages the buff timer; it doesn't touch the
+      // inventory, so consuming the item is on us.
+      try {
+        if (game.survival?.eat?.(stack.id)) {
+          game.inventory?.remove?.(stack.id, 1);
+          refresh(true);
+        }
+      } catch (err) { game.debug?.('eat failed', err); }
     });
     grid.addEventListener('mousemove', (e) => {
       const target = e.target.closest('.inv-slot');
