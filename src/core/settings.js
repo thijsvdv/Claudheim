@@ -8,6 +8,8 @@ const KEY = 'ashwake.settings';
 const DEFAULTS = {
   /** Playtest mode: 10x sprint speed and 10x damage from your own attacks. */
   debugMode: false,
+  /** Hold the sun at noon instead of running the day/night cycle. */
+  eternalDay: false,
 };
 
 export const settings = { ...DEFAULTS };

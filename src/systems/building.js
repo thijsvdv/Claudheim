@@ -251,16 +251,33 @@ export function createBuilding(game) {
 
     let mesh;
     let panel = null;
+    let hinge = null;
     if (def.door) {
-      // A door turns on its hinge, not its middle: the group sits on the left
-      // edge and carries the leaf, so `piece.position` still describes the
-      // closed door's centre for snapping, support and collision.
+      // The frame stays put and the leaf turns inside it: jambs fill the gap a
+      // 1.6 m door leaves in a 2 m wall bay, and stand a little proud of the
+      // wall face so the opening reads as a doorway rather than a hole.
       mesh = new THREE.Group();
+
+      const bay = 2;                                  // the wall width it sits in
+      const jambW = Math.max(0.12, (bay - w) / 2);
+      const jambD = d + 0.08;
+      for (const side of [1, -1]) {
+        const jamb = new THREE.Mesh(new THREE.BoxGeometry(jambW, h, jambD), meshMaterial);
+        jamb.position.set(side * (w / 2 + jambW / 2), 0, 0);
+        jamb.castShadow = true;
+        jamb.receiveShadow = true;
+        mesh.add(jamb);
+      }
+
+      hinge = new THREE.Group();
+      hinge.position.set(-w / 2, 0, 0);
+      mesh.add(hinge);
+
       panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), meshMaterial);
       panel.position.set(w / 2, 0, 0);
       panel.castShadow = true;
       panel.receiveShadow = true;
-      mesh.add(panel);
+      hinge.add(panel);
 
       for (const side of [1, -1]) {
         const handle = new THREE.Mesh(doorHandleGeometry(), doorHandleMaterial());
@@ -268,15 +285,10 @@ export function createBuilding(game) {
         handle.position.set(w - 0.18, -0.05, side * (d / 2 + 0.035));
         handle.rotation.x = Math.PI / 2;
         handle.castShadow = true;
-        mesh.add(handle);
+        hinge.add(handle);
       }
 
-      const cos = Math.cos(rotationY), sin = Math.sin(rotationY);
-      mesh.position.set(
-        position.x + (-w / 2) * cos,
-        position.y,
-        position.z - (-w / 2) * sin,
-      );
+      mesh.position.copy(position);
     } else {
       mesh = new THREE.Mesh(makePieceGeometry(def), meshMaterial);
       mesh.position.copy(position);
@@ -290,7 +302,7 @@ export function createBuilding(game) {
       id, defId: def.id, def, position: position.clone(), rotationY,
       mesh, support: 0, paidCost: paidCost || {},
       door: !!def.door, open: !!open, doorVisual: open ? 1 : 0,
-      panel,
+      panel, hinge,
       light: null, station: null, fire: null,
       anchors: snappable(def) ? worldAnchors(def, position, rotationY) : null,
     };
@@ -325,13 +337,16 @@ export function createBuilding(game) {
 
   function disposePieceMesh(piece) {
     game.scene.remove(piece.mesh);
-    piece.mesh.traverse?.((o) => {
-      if (!o.isMesh) return;
-      if (o.userData.shared) return;      // door handles share one geometry/material
-      o.geometry?.dispose();
-      o.material?.dispose();
+    // A door is several meshes sharing one material (and the handles share a
+    // geometry with every other door), so dispose each resource exactly once.
+    const geos = new Set(), mats = new Set();
+    piece.mesh.traverse((o) => {
+      if (!o.isMesh || o.userData.shared) return;
+      if (o.geometry) geos.add(o.geometry);
+      if (o.material) mats.add(o.material);
     });
-    if (piece.mesh.isMesh) { piece.mesh.geometry?.dispose(); piece.mesh.material?.dispose(); }
+    for (const g of geos) g.dispose();
+    for (const m of mats) m.dispose();
     if (piece.light) game.scene.remove(piece.light);
   }
 
@@ -644,7 +659,8 @@ export function createBuilding(game) {
       for (const p of pieces) {
         if (p.door) {
           p.doorVisual = damp(p.doorVisual, p.open ? 1 : 0, 6, dt);
-          p.mesh.rotation.y = p.rotationY + p.doorVisual * DOOR_OPEN_ANGLE;
+          if (p.hinge) p.hinge.rotation.y = p.doorVisual * DOOR_OPEN_ANGLE;
+          else p.mesh.rotation.y = p.rotationY + p.doorVisual * DOOR_OPEN_ANGLE;
         }
         if (p.light) {
           const flicker = Math.sin(t * 9 + p.light.userData.phase) * 0.15

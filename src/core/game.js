@@ -3,6 +3,7 @@ import { EventBus } from './events.js';
 import { EntityRegistry } from './entities.js';
 import { createLoop } from './loop.js';
 import { createInput } from './input.js';
+import { settings } from './settings.js';
 
 const DAY_LENGTH = 15 * 60; // seconds of real time per in-game day
 
@@ -71,6 +72,13 @@ export class Game {
   advanceTime(dt) {
     const t = this.time;
     t.elapsed += dt;
+    if (settings.eternalDay) {
+      // The clock still runs — day count, autosave, buff timers — but the sky
+      // is pinned to midday.
+      t.dayFraction = 0.5;
+      if (t.isNight) { t.isNight = false; this.bus.emit('time:dawn', t); }
+      return;
+    }
     t.dayFraction += dt / t.dayLength;
     while (t.dayFraction >= 1) { t.dayFraction -= 1; t.day++; }
     const night = t.dayFraction < 0.2 || t.dayFraction > 0.8;

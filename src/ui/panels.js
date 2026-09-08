@@ -622,12 +622,19 @@ export function createPanels(game) {
       (v) => setSetting('debugMode', v),
     );
 
+    const paintDay = toggleRow(
+      'Eternal day',
+      'Pins the sun at noon so you can always see what you are doing. The day counter keeps running.',
+      () => settings.eternalDay,
+      (val) => setSetting('eternalDay', val),
+    );
+
     const optBack = el('button', 'menu-btn menu-help-back', options);
     optBack.type = 'button';
     optBack.textContent = 'Back';
     optBack.addEventListener('click', () => showView('buttons'));
 
-    button('Settings', () => { paintDebug(); showView('settings'); });
+    button('Settings', () => { paintDebug(); paintDay(); showView('settings'); });
 
     const saveBtn = button('Save now', () => {
       try {
